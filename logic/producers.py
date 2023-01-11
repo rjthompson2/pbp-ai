@@ -1,6 +1,14 @@
+from logic.events import ScheduleEvent, RecordEvent
+
 class RecordProducer:
     def produce(self, season_df):
-        events = []
+        f = open("../data/events.txt")
         for season in season_df:
-            events += [RecordEvent(season["game_id"], season["gameday"], season["gametime"])]
-        #TODO add events to the event txt file
+            f.write(RecordEvent(season["game_id"], season["gameday"], season["gametime"]))
+        
+
+class ScheduleProducer:
+    def produce(self):
+        f = open("../data/events.txt")
+        event = ScheduleEvent()
+        f.write(event)

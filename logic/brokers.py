@@ -1,7 +1,8 @@
 
 class ScheduleBroker:
     def check(self):
-        file = f.open("../data/events.txt")
+        f = open("../data/events.txt")
+        print(f)
         #TODO get event from text file and transform it into an event
         #Connect the event to the consumer for the event
 
