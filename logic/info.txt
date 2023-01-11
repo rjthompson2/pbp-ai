@@ -1,0 +1,3 @@
+Producers create events.
+Brokers regulates events and sends them to consumers.
+Consumers execute the specific logic for each event.
