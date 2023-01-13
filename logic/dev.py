@@ -13,6 +13,10 @@
 # season_df = season_df[["game_id", "gameday", "gametime"]]
 # print(season_df)
 
-from brokers import RecordBroker
+#RecordEvent("game_name", "2022-01-23", "18:30")
 
-RecordBroker.check()
+from brokers import Broker
+from events import ScheduleEvent
+from consumers import ScheduleConsumer
+broker = Broker()
+broker.listen(event=ScheduleEvent(), consumer=ScheduleConsumer())
