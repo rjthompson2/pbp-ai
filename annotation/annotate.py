@@ -28,8 +28,15 @@ class AnnotationTool:
 
         #CLASSES
         self.class_list = self.load_classes()
+        self.class_visible = {c: True for c in self.class_list}
         if not self.class_list:
             self.class_list = ["person", "car", "dog", "cat"]
+            self.class_visible = {
+                "person": True,
+                "car": True,
+                "dog": True,
+                "cat": True
+            }
 
         self.selected_class = tk.StringVar(value=self.class_list[0])
 
@@ -37,9 +44,26 @@ class AnnotationTool:
         self.class_box.pack(fill=tk.X)
         self.class_box.bind("<<ListboxSelect>>", self.select_class)
 
+        tk.Label(self.sidebar, text="Toggle Classes").pack()
+
+        self.class_vars = {}
+
+        for c in self.class_list:
+            var = tk.BooleanVar(value=True)
+            self.class_vars[c] = var
+
+            cb = tk.Checkbutton(
+                self.sidebar,
+                text=c,
+                variable=var,
+                command=self.redraw_boxes
+            )
+            cb.pack(anchor="w")
+
         tk.Button(self.sidebar, text="Add Tag", command=self.add_tag).pack(fill=tk.X)
 
         self.refresh_class_box()
+
 
         # DATA
         self.images = []
@@ -50,6 +74,8 @@ class AnnotationTool:
 
         self.current_boxes = []
         self.current_path = None
+
+        self.image_boxes = []
 
         # DRAW STATE
         self.start_x = 0
@@ -141,11 +167,36 @@ class AnnotationTool:
             self.refresh_class_box()
 
     def refresh_class_box(self):
+        # Listbox update
         self.class_box.delete(0, tk.END)
+
         for c in self.class_list:
             self.class_box.insert(tk.END, c)
-        self.class_box.selection_set(0)
-        self.selected_class.set(self.class_list[0])
+
+        # keep safe default selection
+        if self.class_list:
+            self.class_box.selection_clear(0, tk.END)
+            self.class_box.selection_set(0)
+            self.selected_class.set(self.class_list[0])
+
+        # Toggle box update
+        for widget in self.sidebar.pack_slaves():
+            if isinstance(widget, tk.Checkbutton):
+                widget.destroy()
+
+        self.class_vars = {}
+
+        for c in self.class_list:
+            var = tk.BooleanVar(value=True)
+            self.class_vars[c] = var
+
+            cb = tk.Checkbutton(
+                self.sidebar,
+                text=c,
+                variable=var,
+                command=self.redraw_boxes
+            )
+            cb.pack(anchor="w")
 
     def select_class(self, event):
         sel = self.class_box.curselection()
@@ -176,29 +227,40 @@ class AnnotationTool:
         self.load_image()
 
     def load_image(self):
+        if not self.images or self.index >= len(self.images):
+            return
+
         self.canvas.delete("all")
         self.current_boxes = []
-        self.active_box = None
+        self.selected_box = None
 
         self.current_path = self.images[self.index]
+        key = os.path.basename(self.current_path)
 
         self.image_label.config(
-            text=f"{os.path.basename(self.current_path)} ({self.index+1}/{len(self.images)})"
+            text=f"{key} ({self.index+1}/{len(self.images)})"
         )
 
         self.img = Image.open(self.current_path)
         self.render_image()
 
-        key = os.path.basename(self.current_path)
         saved = self.state.get(key)
 
-        if saved:
-            for box in saved["boxes"]:
+        # ALWAYS load full dataset into image_boxes
+        self.image_boxes = saved["boxes"] if saved else []
+
+        # render only visible ones
+        for box in self.image_boxes:
+            if self.class_vars.get(box["class"], tk.BooleanVar(value=True)).get():
                 self.create_box(box)
 
     def render_image(self):
+        if self.img is None:
+            return
+
         w, h = self.img.size
         img = self.img.resize((int(w * self.scale), int(h * self.scale)))
+
         self.tk_img = ImageTk.PhotoImage(img)
         self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_img)
 
@@ -213,6 +275,10 @@ class AnnotationTool:
             # verify it's actually a rectangle we created
             for b in self.current_boxes:
                 if b["rect"] == item:
+                    # Block selection if class is hidden
+                    if not self.class_vars.get(b["class"], tk.BooleanVar(value=True)).get():
+                        return
+
                     self.selected_box = b
                     self.dragging = True
                     self.drag_start = (event.x, event.y)
@@ -263,13 +329,31 @@ class AnnotationTool:
             x2, y2 = self.canvas_to_image(event.x, event.y)
 
             box = {
-                "rect": self.active_rect,
                 "bbox": [x1, y1, x2, y2],
                 "class": self.selected_class.get()
             }
 
-            self.current_boxes.append(box)
+            # add to BOTH:
+            self.image_boxes.append(box)
+            self.create_box(box)
+
             self.active_rect = None
+
+    #TOGGLE BOXES (SHOW/HIDE)
+    def redraw_boxes(self):
+        if self.img is None:
+            return
+
+        self.canvas.delete("all")
+        self.render_image()
+
+        self.current_boxes = []
+
+        for b in self.image_boxes:
+            visible = self.class_vars.get(b["class"], tk.BooleanVar(value=True)).get()
+
+            if visible:
+                self.create_box(b)
 
     # BOX LOGIC
     def create_box(self, box):
@@ -286,7 +370,7 @@ class AnnotationTool:
 
         obj = {
             "rect": rect,
-            "bbox": [x1, y1, x2, y2],
+            "bbox": box["bbox"],
             "class": box["class"]
         }
 
@@ -334,16 +418,19 @@ class AnnotationTool:
 
         box = self.selected_box
 
-        # remove from canvas
         self.canvas.delete(box["rect"])
 
-        # remove from memory (match by rect id, NOT object identity)
+        # remove from BOTH lists
         self.current_boxes = [
             b for b in self.current_boxes
             if b["rect"] != box["rect"]
         ]
 
-        # clear selection
+        self.image_boxes = [
+            b for b in self.image_boxes
+            if not (b["bbox"] == box["bbox"] and b["class"] == box["class"])
+        ]
+
         self.selected_box = None
 
     def cancel_draw(self):
@@ -415,10 +502,7 @@ class AnnotationTool:
         key = os.path.basename(self.current_path)
 
         self.state[key] = {
-            "boxes": [
-                {"bbox": b["bbox"], "class": b["class"]}
-                for b in self.current_boxes
-            ],
+            "boxes": self.image_boxes,   # IMPORTANT: save full dataset, not filtered UI state
             "hash": self.get_image_hash(self.current_path)
         }
 
