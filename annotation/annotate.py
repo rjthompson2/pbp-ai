@@ -94,6 +94,7 @@ class AnnotationTool:
             validatecommand=vcmd
         )
         self.jump_entry.pack(fill=tk.X)
+        self.jump_entry.bind("<Return>", lambda e: self.jump_to_image())
 
         tk.Button(
             jump_frame,
