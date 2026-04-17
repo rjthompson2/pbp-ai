@@ -1,0 +1,9 @@
+/data/*/*
+/data*.*
+/output
+.pytest_cache
+/ai/model/*
+/data_yolo
+/runs
+yolov8n.pt
+.DS_Store
