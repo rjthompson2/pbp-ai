@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import hashlib
 import tkinter as tk
@@ -23,7 +24,7 @@ class AnnotationTool:
         self.sidebar.pack(side=tk.RIGHT, fill=tk.Y)
 
         tk.Button(self.sidebar, text="Load Folder", command=self.load_folder).pack(fill=tk.X)
-        tk.Button(self.sidebar, text="Save COCO", command=self.save_coco).pack(fill=tk.X)
+        tk.Button(self.sidebar, text="Save", command=self.save_file).pack(fill=tk.X)
 
         #CLASSES
         self.class_list = self.load_classes()
@@ -72,6 +73,33 @@ class AnnotationTool:
         # STATE
         self.state_file = annotation_path + "state.json"
         self.state = self.load_state()
+        self.selected_box = None
+
+        # IMAGE LABEL
+        self.image_label = tk.Label(self.sidebar, text="", wraplength=200)
+        self.image_label.pack(fill=tk.X)
+
+        # JUMP TO IMAGE
+        jump_frame = tk.Frame(self.sidebar)
+        jump_frame.pack(fill=tk.X, pady=5)
+
+        tk.Label(jump_frame, text="Go to image #").pack()
+
+        # input validation
+        vcmd = (self.root.register(self.only_int), "%P")
+
+        self.jump_entry = tk.Entry(
+            jump_frame,
+            validate="key",
+            validatecommand=vcmd
+        )
+        self.jump_entry.pack(fill=tk.X)
+
+        tk.Button(
+            jump_frame,
+            text="Jump",
+            command=self.jump_to_image
+        ).pack(fill=tk.X)
 
     #DEBUG TOOl
     def debug_key(self, event):
@@ -129,11 +157,19 @@ class AnnotationTool:
         if not folder:
             return
 
-        self.images = [
-            os.path.join(folder, f)
-            for f in os.listdir(folder)
-            if f.lower().endswith((".jpg", ".png", ".jpeg"))
-        ]
+        def natural_sort_key(path):
+            name = os.path.basename(path)
+            return [int(text) if text.isdigit() else text.lower()
+                    for text in re.split(r'(\d+)', name)]
+
+        self.images = sorted(
+            [
+                os.path.join(folder, f)
+                for f in os.listdir(folder)
+                if f.lower().endswith((".jpg", ".png", ".jpeg"))
+            ],
+            key=natural_sort_key
+        )
 
         self.index = 0
         self.load_image()
@@ -144,8 +180,12 @@ class AnnotationTool:
         self.active_box = None
 
         self.current_path = self.images[self.index]
-        self.img = Image.open(self.current_path)
 
+        self.image_label.config(
+            text=f"{os.path.basename(self.current_path)} ({self.index+1}/{len(self.images)})"
+        )
+
+        self.img = Image.open(self.current_path)
         self.render_image()
 
         key = os.path.basename(self.current_path)
@@ -328,6 +368,31 @@ class AnnotationTool:
         for b in old:
             self.create_box(b)
 
+    def jump_to_image(self):
+        if not self.images:
+            return
+
+        try:
+            idx = int(self.jump_entry.get()) - 1
+        except ValueError:
+            print("Invalid index")
+            return
+
+        # clamp to valid range
+        idx = max(0, min(idx, len(self.images) - 1))
+
+        # save current annotations first
+        self.save_all_states()
+
+        self.index = idx
+        self.load_image()
+
+    def only_int(self, value_if_allowed):
+        if value_if_allowed == "":
+            return True  # allow clearing field
+
+        return value_if_allowed.isdigit()
+
     # NAV
     def next_image(self):
         self.save_state_file()
@@ -358,9 +423,9 @@ class AnnotationTool:
 
         self.save_state_file()
 
-    def save_coco(self):
+    def save_file(self):
         self.save_all_states()
-        print("COCO saved")
+        print("File saved")
 
 
 if __name__ == "__main__":
