@@ -1,0 +1,369 @@
+import os
+import json
+import hashlib
+import tkinter as tk
+from tkinter import filedialog, simpledialog
+from PIL import Image, ImageTk
+
+annotation_path = "data/annotations/"
+os.makedirs(annotation_path, exist_ok=True)
+
+
+class AnnotationTool:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Annotation Tool")
+
+        # CANVAS
+        self.canvas = tk.Canvas(root, cursor="cross", bg="black")
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # SIDEBAR
+        self.sidebar = tk.Frame(root, width=220)
+        self.sidebar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        tk.Button(self.sidebar, text="Load Folder", command=self.load_folder).pack(fill=tk.X)
+        tk.Button(self.sidebar, text="Save COCO", command=self.save_coco).pack(fill=tk.X)
+
+        #CLASSES
+        self.class_list = self.load_classes()
+        if not self.class_list:
+            self.class_list = ["person", "car", "dog", "cat"]
+
+        self.selected_class = tk.StringVar(value=self.class_list[0])
+
+        self.class_box = tk.Listbox(self.sidebar)
+        self.class_box.pack(fill=tk.X)
+        self.class_box.bind("<<ListboxSelect>>", self.select_class)
+
+        tk.Button(self.sidebar, text="Add Tag", command=self.add_tag).pack(fill=tk.X)
+
+        self.refresh_class_box()
+
+        # DATA
+        self.images = []
+        self.index = 0
+        self.img = None
+        self.tk_img = None
+        self.scale = 1.0
+
+        self.current_boxes = []
+        self.current_path = None
+
+        # DRAW STATE
+        self.start_x = 0
+        self.start_y = 0
+        self.active_rect = None
+        self.active_box = None
+
+        self.drag_data = {"x": 0, "y": 0}
+
+        # EVENTS
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<MouseWheel>", self.zoom)
+        
+        self.root.bind("<BackSpace>", lambda e: self.delete_box())
+        self.root.bind("<Escape>", lambda e: self.cancel_draw())
+        self.root.bind("d", lambda e: self.next_image())
+        self.root.bind("a", lambda e: self.prev_image())
+
+        # STATE
+        self.state_file = annotation_path + "state.json"
+        self.state = self.load_state()
+
+    #DEBUG TOOl
+    def debug_key(self, event):
+        print("KEY PRESSED:", event.keysym)
+
+    # STATE
+    def load_state(self):
+        if os.path.exists(self.state_file):
+            with open(self.state_file, "r") as f:
+                return json.load(f)
+        return {}
+
+    def save_state_file(self):
+        with open(self.state_file, "w") as f:
+            json.dump(self.state, f, indent=2)
+
+    def get_image_hash(self, path):
+        with open(path, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+
+    # CLASSES
+    def load_classes(self):
+        path = annotation_path + "classes.json"
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                return json.load(f)
+        return []
+
+    def save_classes(self):
+        with open(annotation_path + "classes.json", "w") as f:
+            json.dump(self.class_list, f, indent=2)
+
+    def add_tag(self):
+        tag = simpledialog.askstring("Add Tag", "Enter new class name:")
+        if tag and tag.strip() not in self.class_list:
+            self.class_list.append(tag.strip())
+            self.save_classes()
+            self.refresh_class_box()
+
+    def refresh_class_box(self):
+        self.class_box.delete(0, tk.END)
+        for c in self.class_list:
+            self.class_box.insert(tk.END, c)
+        self.class_box.selection_set(0)
+        self.selected_class.set(self.class_list[0])
+
+    def select_class(self, event):
+        sel = self.class_box.curselection()
+        if sel:
+            self.selected_class.set(self.class_list[sel[0]])
+
+    # LOAD IMAGES
+    def load_folder(self):
+        folder = filedialog.askdirectory()
+        if not folder:
+            return
+
+        self.images = [
+            os.path.join(folder, f)
+            for f in os.listdir(folder)
+            if f.lower().endswith((".jpg", ".png", ".jpeg"))
+        ]
+
+        self.index = 0
+        self.load_image()
+
+    def load_image(self):
+        self.canvas.delete("all")
+        self.current_boxes = []
+        self.active_box = None
+
+        self.current_path = self.images[self.index]
+        self.img = Image.open(self.current_path)
+
+        self.render_image()
+
+        key = os.path.basename(self.current_path)
+        saved = self.state.get(key)
+
+        if saved:
+            for box in saved["boxes"]:
+                self.create_box(box)
+
+    def render_image(self):
+        w, h = self.img.size
+        img = self.img.resize((int(w * self.scale), int(h * self.scale)))
+        self.tk_img = ImageTk.PhotoImage(img)
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_img)
+
+    # DRAW NEW BOX
+    def on_press(self, event):
+        # detect item under cursor
+        clicked = self.canvas.find_closest(event.x, event.y)
+
+        if clicked:
+            item = clicked[0]
+
+            # verify it's actually a rectangle we created
+            for b in self.current_boxes:
+                if b["rect"] == item:
+                    self.selected_box = b
+                    self.dragging = True
+                    self.drag_start = (event.x, event.y)
+                    self.highlight_box(b)
+                    return
+
+        # otherwise start drawing
+        self.selected_box = None
+        self.dragging = False
+
+        self.start_x, self.start_y = event.x, event.y
+
+        self.active_rect = self.canvas.create_rectangle(
+            event.x, event.y, event.x, event.y,
+            outline="red", width=2
+        )
+
+    def on_drag(self, event):
+        # MOVE BOX
+        if self.dragging and self.selected_box:
+            dx = (event.x - self.drag_start[0]) / self.scale
+            dy = (event.y - self.drag_start[1]) / self.scale
+
+            x1, y1, x2, y2 = self.selected_box["bbox"]
+            self.selected_box["bbox"] = [x1 + dx, y1 + dy, x2 + dx, y2 + dy]
+
+            cx1, cy1 = self.image_to_canvas(x1 + dx, y1 + dy)
+            cx2, cy2 = self.image_to_canvas(x2 + dx, y2 + dy)
+
+            self.canvas.coords(self.selected_box["rect"], cx1, cy1, cx2, cy2)
+
+            self.drag_start = (event.x, event.y)
+            return
+
+        # DRAW BOX
+        if self.active_rect:
+            self.canvas.coords(
+                self.active_rect,
+                self.start_x, self.start_y,
+                event.x, event.y
+            )
+
+    def on_release(self, event):
+        self.dragging = False
+
+        if self.active_rect:
+            x1, y1 = self.canvas_to_image(self.start_x, self.start_y)
+            x2, y2 = self.canvas_to_image(event.x, event.y)
+
+            box = {
+                "rect": self.active_rect,
+                "bbox": [x1, y1, x2, y2],
+                "class": self.selected_class.get()
+            }
+
+            self.current_boxes.append(box)
+            self.active_rect = None
+
+    # BOX LOGIC
+    def create_box(self, box):
+        x1, y1, x2, y2 = box["bbox"]
+
+        cx1, cy1 = self.image_to_canvas(x1, y1)
+        cx2, cy2 = self.image_to_canvas(x2, y2)
+
+        rect = self.canvas.create_rectangle(
+            cx1, cy1, cx2, cy2,
+            outline="green",
+            width=2
+        )
+
+        obj = {
+            "rect": rect,
+            "bbox": [x1, y1, x2, y2],
+            "class": box["class"]
+        }
+
+        self.current_boxes.append(obj)
+
+        self.canvas.tag_bind(rect, "<ButtonPress-1>", self.select_box)
+
+    def highlight_box(self, box):
+        # reset all boxes to green
+        for b in self.current_boxes:
+            self.canvas.itemconfig(b["rect"], outline="green", width=2)
+
+        # highlight selected box
+        self.canvas.itemconfig(box["rect"], outline="yellow", width=3)
+
+    # SELECT + DRAG
+    def select_box(self, rect_id, event=None):
+        for b in self.current_boxes:
+            if b["rect"] == rect_id:
+                self.selected_box = b
+                self.drag_start = (event.x, event.y) if event else (0, 0)
+                self.highlight_box(b)
+                break
+
+    def drag_box(self, event):
+        dx = (event.x - self.drag_data["x"]) / self.scale
+        dy = (event.y - self.drag_data["y"]) / self.scale
+
+        x1, y1, x2, y2 = self.active_box["bbox"]
+
+        self.active_box["bbox"] = [x1 + dx, y1 + dy, x2 + dx, y2 + dy]
+
+        self.drag_data["x"] = event.x
+        self.drag_data["y"] = event.y
+
+        cx1, cy1 = self.image_to_canvas(x1 + dx, y1 + dy)
+        cx2, cy2 = self.image_to_canvas(x2 + dx, y2 + dy)
+
+        self.canvas.coords(self.active_box["rect"], cx1, cy1, cx2, cy2)
+
+    # DELETE / CANCEL
+    def delete_box(self):
+        if self.selected_box is None:
+            return
+
+        box = self.selected_box
+
+        # remove from canvas
+        self.canvas.delete(box["rect"])
+
+        # remove from memory (match by rect id, NOT object identity)
+        self.current_boxes = [
+            b for b in self.current_boxes
+            if b["rect"] != box["rect"]
+        ]
+
+        # clear selection
+        self.selected_box = None
+
+    def cancel_draw(self):
+        if self.active_rect:
+            self.canvas.delete(self.active_rect)
+            self.active_rect = None
+
+    # UTIL
+    def canvas_to_image(self, x, y):
+        return x / self.scale, y / self.scale
+
+    def image_to_canvas(self, x, y):
+        return x * self.scale, y * self.scale
+
+    def zoom(self, event):
+        self.scale *= 1.1 if event.delta > 0 else 0.9
+        self.canvas.delete("all")
+        self.render_image()
+
+        old = self.current_boxes.copy()
+        self.current_boxes = []
+
+        for b in old:
+            self.create_box(b)
+
+    # NAV
+    def next_image(self):
+        self.save_state_file()
+        if self.index < len(self.images) - 1:
+            self.index += 1
+            self.load_image()
+
+    def prev_image(self):
+        self.save_state_file()
+        if self.index > 0:
+            self.index -= 1
+            self.load_image()
+
+    # SAVE
+    def save_all_states(self):
+        if not self.current_path:
+            return
+
+        key = os.path.basename(self.current_path)
+
+        self.state[key] = {
+            "boxes": [
+                {"bbox": b["bbox"], "class": b["class"]}
+                for b in self.current_boxes
+            ],
+            "hash": self.get_image_hash(self.current_path)
+        }
+
+        self.save_state_file()
+
+    def save_coco(self):
+        self.save_all_states()
+        print("COCO saved")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = AnnotationTool(root)
+    root.mainloop()
