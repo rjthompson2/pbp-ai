@@ -40,27 +40,15 @@ class AnnotationTool:
 
         self.selected_class = tk.StringVar(value=self.class_list[0])
 
-        self.class_box = tk.Listbox(self.sidebar)
-        self.class_box.pack(fill=tk.X)
-        self.class_box.bind("<<ListboxSelect>>", self.select_class)
-
-        tk.Label(self.sidebar, text="Toggle Classes").pack()
 
         self.class_vars = {}
+        self.visible_vars = {}
+        tk.Label(self.sidebar, text="Classes").pack()
 
-        for c in self.class_list:
-            var = tk.BooleanVar(value=True)
-            self.class_vars[c] = var
+        self.selected_class = tk.StringVar(value=self.class_list[0] if self.class_list else "")
 
-            cb = tk.Checkbutton(
-                self.sidebar,
-                text=c,
-                variable=var,
-                command=self.redraw_boxes
-            )
-            cb.pack(anchor="w")
-
-        tk.Button(self.sidebar, text="Add Tag", command=self.add_tag).pack(fill=tk.X)
+        self.add_tag_btn = tk.Button(self.sidebar, text="Add Tag", command=self.add_tag)
+        self.add_tag_btn.pack(fill=tk.X)
 
         self.refresh_class_box()
 
@@ -167,41 +155,52 @@ class AnnotationTool:
             self.refresh_class_box()
 
     def refresh_class_box(self):
-        # Listbox update
-        self.class_box.delete(0, tk.END)
-
-        for c in self.class_list:
-            self.class_box.insert(tk.END, c)
-
-        # keep safe default selection
-        if self.class_list:
-            self.class_box.selection_clear(0, tk.END)
-            self.class_box.selection_set(0)
-            self.selected_class.set(self.class_list[0])
-
-        # Toggle box update
-        for widget in self.sidebar.pack_slaves():
-            if isinstance(widget, tk.Checkbutton):
+        if hasattr(self, "class_ui_rows"):
+            for widget in self.class_ui_rows:
                 widget.destroy()
 
-        self.class_vars = {}
+        self.class_ui_rows = []
+
+        # ensure selection exists
+        if self.class_list and not self.selected_class.get():
+            self.selected_class.set(self.class_list[0])
 
         for c in self.class_list:
-            var = tk.BooleanVar(value=True)
+            row = tk.Frame(self.sidebar)
+            row.pack(fill=tk.X, anchor="w")
+            self.class_ui_rows.append(row)
+
+            # visibility toggle
+            var = self.class_vars.get(c, tk.BooleanVar(value=True))
             self.class_vars[c] = var
 
-            cb = tk.Checkbutton(
-                self.sidebar,
-                text=c,
+            tk.Checkbutton(
+                row,
                 variable=var,
                 command=self.redraw_boxes
-            )
-            cb.pack(anchor="w")
+            ).pack(side=tk.LEFT)
 
-    def select_class(self, event):
-        sel = self.class_box.curselection()
-        if sel:
-            self.selected_class.set(self.class_list[sel[0]])
+            # selection button
+            rb = tk.Radiobutton(
+                row,
+                text=c,
+                variable=self.selected_class,
+                value=c,
+                indicatoron=0,   # makes it act like a button
+                width=12
+            )
+            rb.pack(side=tk.LEFT, anchor="w")
+
+        # Rebuild button
+        self.add_tag_btn.destroy()
+        self.add_tag_btn = tk.Button(self.sidebar, text="Add Tag", command=self.add_tag)
+        self.add_tag_btn.pack(fill=tk.X)
+
+
+    # def select_class(self, event):
+    #     sel = self.class_box.curselection()
+    #     if sel:
+    #         self.selected_class.set(self.class_list[sel[0]])
 
     # LOAD IMAGES
     def load_folder(self):
@@ -303,7 +302,13 @@ class AnnotationTool:
             dy = (event.y - self.drag_start[1]) / self.scale
 
             x1, y1, x2, y2 = self.selected_box["bbox"]
-            self.selected_box["bbox"] = [x1 + dx, y1 + dy, x2 + dx, y2 + dy]
+            new_bbox = [x1 + dx, y1 + dy, x2 + dx, y2 + dy]
+
+            # update UI copy
+            self.selected_box["bbox"] = new_bbox
+
+            # update source of truth
+            self.selected_box["ref"]["bbox"] = new_bbox
 
             cx1, cy1 = self.image_to_canvas(x1 + dx, y1 + dy)
             cx2, cy2 = self.image_to_canvas(x2 + dx, y2 + dy)
@@ -332,6 +337,9 @@ class AnnotationTool:
                 "bbox": [x1, y1, x2, y2],
                 "class": self.selected_class.get()
             }
+
+            # remove temporary red box
+            self.canvas.delete(self.active_rect)
 
             # add to BOTH:
             self.image_boxes.append(box)
@@ -371,7 +379,8 @@ class AnnotationTool:
         obj = {
             "rect": rect,
             "bbox": box["bbox"],
-            "class": box["class"]
+            "class": box["class"],
+            "ref": box
         }
 
         self.current_boxes.append(obj)
@@ -388,10 +397,14 @@ class AnnotationTool:
 
     # SELECT + DRAG
     def select_box(self, rect_id, event=None):
+        if event is None:
+            return
+            
+        rect_id = self.canvas.find_closest(event.x, event.y)[0]
+
         for b in self.current_boxes:
             if b["rect"] == rect_id:
                 self.selected_box = b
-                self.drag_start = (event.x, event.y) if event else (0, 0)
                 self.highlight_box(b)
                 break
 
@@ -416,20 +429,13 @@ class AnnotationTool:
         if self.selected_box is None:
             return
 
-        box = self.selected_box
+        target = self.selected_box
 
-        self.canvas.delete(box["rect"])
+        # remove from source of truth
+        self.image_boxes.remove(target["ref"])
 
-        # remove from BOTH lists
-        self.current_boxes = [
-            b for b in self.current_boxes
-            if b["rect"] != box["rect"]
-        ]
-
-        self.image_boxes = [
-            b for b in self.image_boxes
-            if not (b["bbox"] == box["bbox"] and b["class"] == box["class"])
-        ]
+        # redraw everything (safe + consistent)
+        self.redraw_boxes()
 
         self.selected_box = None
 
@@ -502,7 +508,7 @@ class AnnotationTool:
         key = os.path.basename(self.current_path)
 
         self.state[key] = {
-            "boxes": self.image_boxes,   # IMPORTANT: save full dataset, not filtered UI state
+            "boxes": self.image_boxes,
             "hash": self.get_image_hash(self.current_path)
         }
 
