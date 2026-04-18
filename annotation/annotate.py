@@ -334,7 +334,9 @@ class AnnotationTool:
             x2, y2 = self.canvas_to_image(event.x, event.y)
 
             # protects against misclicks
-            if abs(x2 - x1) < 5 or abs(y2 - y1) < 5:
+            if abs(x2 - x1) < 5 and abs(y2 - y1) < 5:
+                self.canvas.delete(self.active_rect)
+                self.active_rect = None
                 return
 
             box = {
