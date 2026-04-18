@@ -333,6 +333,10 @@ class AnnotationTool:
             x1, y1 = self.canvas_to_image(self.start_x, self.start_y)
             x2, y2 = self.canvas_to_image(event.x, event.y)
 
+            # protects against misclicks
+            if abs(x2 - x1) < 5 or abs(y2 - y1) < 5:
+                return
+
             box = {
                 "bbox": [x1, y1, x2, y2],
                 "class": self.selected_class.get()
